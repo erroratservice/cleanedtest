@@ -1,6 +1,6 @@
 from asyncio import Lock, sleep
 from time import time
-from pyrogram.errors import FloodWait, FloodPremiumWait
+from pyrogram.errors import FloodWait
 
 from bot import (
     LOGGER,
