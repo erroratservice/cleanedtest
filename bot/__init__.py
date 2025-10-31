@@ -182,7 +182,6 @@ if len(USER_SESSION_STRING) != 0:
             TELEGRAM_HASH,
             session_string=USER_SESSION_STRING,
             parse_mode=enums.ParseMode.HTML,
-            max_concurrent_transmissions=10,
         ).start()
         IS_PREMIUM_USER = user.me.is_premium
     except:
@@ -519,7 +518,6 @@ bot = TgClient(
     TELEGRAM_HASH,
     bot_token=BOT_TOKEN,
     parse_mode=enums.ParseMode.HTML,
-    max_concurrent_transmissions=10,
 ).start()
 bot_name = bot.me.username
 
