@@ -85,6 +85,9 @@ class TaskListener(TaskConfig):
     async def on_download_complete(self):
         await sleep(2)
         multi_links = False
+        
+        LOGGER.info(f"[{self.mid}] Download complete started for: {self.name}")
+        
         if (
             self.folder_name
             and self.same_dir
@@ -124,10 +127,15 @@ class TaskListener(TaskConfig):
                                 multi_links = True
                             break
                     await sleep(1)
+        
         async with task_dict_lock:
+            if self.mid not in task_dict:
+                LOGGER.error(f"[{self.mid}] Task not found in task_dict")
+                return
             download = task_dict[self.mid]
             self.name = download.name()
             gid = download.gid()
+        
         LOGGER.info(f"Download completed: {self.name}")
 
         if not (self.is_torrent or self.is_qbit):
@@ -138,9 +146,11 @@ class TaskListener(TaskConfig):
         files_to_delete = []
 
         if multi_links:
-            await self.on_upload_error(
-                f"{self.name} Downloaded!\n\nWaiting for other tasks to finish..."
-            )
+            LOGGER.info(f"[{self.mid}] Multi-links detected - waiting for other tasks")
+            async with queue_dict_lock:
+                if self.mid in non_queued_dl:
+                    non_queued_dl.remove(self.mid)
+            await start_from_queued()
             return
 
         if self.folder_name:
@@ -158,6 +168,7 @@ class TaskListener(TaskConfig):
 
         up_path = f"{self.dir}/{self.name}"
         self.size = await get_path_size(up_path)
+        
         if not config_dict["QUEUE_ALL"]:
             async with queue_dict_lock:
                 if self.mid in non_queued_dl:
@@ -234,17 +245,46 @@ class TaskListener(TaskConfig):
             if self.is_cancelled:
                 return
 
+        # Store paths before queueing
+        up_dir_backup = up_dir
+        up_path_backup = up_path
+        
+        LOGGER.info(f"[{self.mid}] Calling check_running_tasks for upload")
         add_to_queue, event = await check_running_tasks(self, "up")
         await start_from_queued()
+        
         if add_to_queue:
-            LOGGER.info(f"Added to Queue/Upload: {self.name}")
+            LOGGER.info(f"[{self.mid}] Added to Queue/Upload: {self.name}")
             async with task_dict_lock:
                 task_dict[self.mid] = QueueStatus(self, gid, "Up")
-            await event.wait()
-            if self.is_cancelled:
+            
+            try:
+                LOGGER.info(f"[{self.mid}] Waiting in upload queue...")
+                await asyncio.wait_for(event.wait(), timeout=600)
+                LOGGER.info(f"[{self.mid}] Upload queue event triggered")
+            except asyncio.TimeoutError:
+                LOGGER.error(f"[{self.mid}] Upload queue wait timeout for: {self.name}")
+                await self.on_upload_error("Upload queue wait timeout - task may be stuck")
                 return
-            LOGGER.info(f"Start from Queued/Upload: {self.name}")
+            
+            if self.is_cancelled:
+                LOGGER.info(f"[{self.mid}] Task cancelled during queue wait")
+                return
+            
+            # Verify directory still exists after queue wait
+            if not await aiopath.exists(up_dir_backup):
+                err_msg = f"Download directory deleted during queue wait: {up_dir_backup}"
+                LOGGER.error(f"[{self.mid}] {err_msg}")
+                await self.on_upload_error(err_msg)
+                return
+            
+            # Restore paths in case they were modified
+            up_dir = up_dir_backup
+            up_path = up_path_backup
+            
+            LOGGER.info(f"[{self.mid}] Starting from Queued/Upload: {self.name}")
 
+        # Recalculate size before upload
         self.size = await get_path_size(up_dir)
         for s in unwanted_files_size:
             self.size -= s
