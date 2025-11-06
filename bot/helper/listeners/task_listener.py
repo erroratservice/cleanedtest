@@ -260,9 +260,9 @@ class TaskListener(TaskConfig):
             
             try:
                 LOGGER.info(f"[{self.mid}] Waiting in upload queue...")
-                await asyncio.wait_for(event.wait(), timeout=600)
+                await wait_for(event.wait(), timeout=600)
                 LOGGER.info(f"[{self.mid}] Upload queue event triggered")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 LOGGER.error(f"[{self.mid}] Upload queue wait timeout for: {self.name}")
                 await self.on_upload_error("Upload queue wait timeout - task may be stuck")
                 return
