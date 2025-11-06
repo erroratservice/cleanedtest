@@ -203,61 +203,37 @@ async def restart_notification():
     else:
         restart_chat_id, restart_msg_id = 0, 0
 
+    # This helper function will now ONLY handle "Bot Restarted!" messages for OTHER chats
     async def send_incomplete_task_message(cid, msg):
         try:
-            if msg.startswith("Restarted Successfully!"):
-                # This is the main "Restarted" message
-                await bot.edit_message_text(
-                    chat_id=restart_chat_id, message_id=restart_msg_id, text=msg
-                )
-                await remove(".restartmsg")
-            else:
-                # This is an incomplete task notification for a specific chat
+            await bot.send_message(
+                chat_id=cid,
+                text=msg,
+                disable_web_page_preview=True,
+                disable_notification=True,
+            )
+        except Exception as e:
+            LOGGER.warning(f"Couldn't send incomplete task notification to chat {cid}: {e}. Sending to OWNER_ID as fallback.")
+            try:
+                fallback_msg = f"<b>Bot Restarted!</b>\n\nFailed to send this notification to chat <code>{cid}</code> (e.g., Peer id invalid). Forwarding to you:\n\n{msg}"
                 await bot.send_message(
-                    chat_id=cid,
-                    text=msg,
+                    chat_id=config_dict["OWNER_ID"],
+                    text=fallback_msg,
                     disable_web_page_preview=True,
                     disable_notification=True,
                 )
-        except Exception as e:
-            # If sending to cid fails (e.g., Peer id invalid)
-            LOGGER.warning(f"Couldn't send restart notification to chat {cid}: {e}.")
-            
-            # Check if this was an incomplete task notification (and not the main "Restarted" message)
-            if not msg.startswith("Restarted Successfully!"):
-                fallback_msg = f"<b>Bot Restarted!</b>\n\nFailed to send this notification to chat <code>{cid}</code> (e.g., Peer id invalid). Forwarding to you:\n\n{msg}"
-                
-                # First, try to send to the chat where /restart was used
-                if restart_chat_id != 0:
-                    try:
-                        await bot.send_message(
-                            chat_id=restart_chat_id,
-                            text=fallback_msg,
-                            disable_web_page_preview=True,
-                            disable_notification=True,
-                        )
-                        return # Success!
-                    except Exception as e2:
-                        LOGGER.warning(f"Failed to send fallback notification to restart chat {restart_chat_id}: {e2}. Falling back to OWNER_ID.")
-                
-                # If restart_chat_id is 0 or sending to it failed, send to OWNER_ID
-                try:
-                    await bot.send_message(
-                        chat_id=config_dict["OWNER_ID"],
-                        text=fallback_msg,
-                        disable_web_page_preview=True,
-                        disable_notification=True,
-                    )
-                except Exception as e3:
-                    LOGGER.error(f"Failed to send fallback notification to OWNER_ID {config_dict['OWNER_ID']}: {e3}")
-
+            except Exception as e2:
+                LOGGER.error(f"Failed to send fallback notification to OWNER_ID: {e2}")
 
     if config_dict["INCOMPLETE_TASK_NOTIFIER"] and config_dict["DATABASE_URL"]:
         if notifier_dict := await database.get_incomplete_tasks():
             for cid, data in notifier_dict.items():
-                # Check if this chat is the one that triggered the restart
-                msg = "Restarted Successfully!" if cid == restart_chat_id else "Bot Restarted!"
-                
+                # If this task is from the restart chat, we'll handle it below.
+                # This loop ONLY handles tasks from OTHER chats.
+                if cid == restart_chat_id:
+                    continue 
+                    
+                msg = "Bot Restarted!"
                 for tag, links in data.items():
                     msg += f"\n\n{tag}: "
                     for index, link in enumerate(links, start=1):
@@ -265,18 +241,45 @@ async def restart_notification():
                         if len(msg.encode()) > 4000:
                             await send_incomplete_task_message(cid, msg)
                             msg = "" # Reset message for next chunk
-                if msg:
+                if msg and msg != "Bot Restarted!":
                     await send_incomplete_task_message(cid, msg)
 
-    # If the restart message hasn't been edited yet (e.g., no incomplete tasks for that chat)
-    # edit it now.
+    # Now, handle the main restart message separately
     if await aiopath.isfile(".restartmsg"):
+        final_msg = "Restarted Successfully!"
+        
+        # Try to get incomplete tasks *only* for the restart chat
+        if config_dict["INCOMPLETE_TASK_NOTIFIER"] and config_dict["DATABASE_URL"]:
+            if incomplete_data := await database.get_incomplete_tasks(restart_chat_id):
+                for tag, links in incomplete_data.items():
+                    final_msg += f"\n\n{tag}: "
+                    for index, link in enumerate(links, start=1):
+                        final_msg += f" <a href='{link}'>{index}</a> |"
+                        # We don't worry about splitting here, as it's one message.
+                        # If it's too long, it will just fail to edit.
+
         try:
+            # Try to edit the original message
             await bot.edit_message_text(
-                chat_id=restart_chat_id, message_id=restart_msg_id, text="Restarted Successfully!"
+                chat_id=restart_chat_id,
+                message_id=restart_msg_id,
+                text=final_msg,
+                disable_web_page_preview=True,
             )
         except Exception as e:
-            LOGGER.warning(f"Couldn't edit restart message in {restart_chat_id}: {e}")
+            LOGGER.warning(f"Couldn't edit restart message in {restart_chat_id}: {e}. Sending to OWNER_ID as fallback.")
+            try:
+                # If editing fails (e.g., Peer id invalid), send the whole message to OWNER_ID
+                fallback_msg = f"Bot Restarted.\n\nFailed to edit restart message in chat <code>{restart_chat_id}</code>.\n\n{final_msg}"
+                await bot.send_message(
+                    chat_id=config_dict["OWNER_ID"],
+                    text=fallback_msg,
+                    disable_web_page_preview=True,
+                    disable_notification=True,
+                )
+            except Exception as e2:
+                LOGGER.error(f"Failed to send final restart notification to OWNER_ID: {e2}")
+        
         await remove(".restartmsg")
 
 
